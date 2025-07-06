@@ -1,0 +1,26 @@
+# Discord bot framework
+py-cord==2.6.0
+python-dotenv==1.0.0
+
+# Video processing and computer vision
+opencv-python==4.8.1.78
+numpy==1.24.3
+ffmpeg-python==0.2.0
+
+# AI/ML models - Qwen2-VL for video understanding
+torch==2.0.1
+torchvision==0.15.2
+transformers==4.45.0  # Standard version that works with Python 3.8
+accelerate==0.27.0
+sentencepiece==0.1.99
+protobuf==3.20.3
+
+# Video processing utilities
+moviepy==1.0.3
+pillow==10.0.1
+
+# Async HTTP requests
+aiohttp==3.9.0
+
+# Additional utilities
+tqdm==4.66.1 
