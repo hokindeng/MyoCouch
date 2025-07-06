@@ -19,6 +19,10 @@ protobuf==3.20.3
 moviepy==1.0.3
 pillow==10.0.1
 
+# Human detection and tracking
+ultralytics==8.0.236  # YOLO for human detection
+supervision==0.17.1  # For visual annotations
+
 # Async HTTP requests
 aiohttp==3.9.0
 
