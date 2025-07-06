@@ -231,124 +231,128 @@ class VideoCoachingProcessor:
         
         return advice
     
-    def summarize_advice(self, advice: str, chunk_index: int) -> str:
+    def summarize_advice(self, advice: str, chunk_index: int, previous_summaries: List[str] = None) -> str:
         """
-        Create a comprehensive summary of the coaching advice.
+        Use the AI model to create a non-repetitive summary with memory context.
         
         Args:
             advice: Full coaching advice text
             chunk_index: Index of current chunk
+            previous_summaries: List of previous summaries to avoid repetition
             
         Returns:
-            Detailed coaching summary
+            AI-generated summary (80 words max, plain text)
         """
-        # Extract key coaching points from the advice
-        summary_parts = []
+        # Build context from previous summaries
+        memory_context = ""
+        if previous_summaries and len(previous_summaries) > 0:
+            memory_context = "\n\nPREVIOUS ADVICE ALREADY GIVEN:\n"
+            for i, prev_summary in enumerate(previous_summaries):
+                memory_context += f"Segment {i+1}: {prev_summary}\n"
+            memory_context += "\nIMPORTANT: Do NOT repeat these points. Provide NEW, different advice."
         
-        # Clean the advice text
-        advice_lower = advice.lower()
-        
-        # Form and Technique section
-        form_tips = []
-        if "stance" in advice_lower:
-            form_tips.append("Maintain proper stance with feet shoulder-width apart")
-        if "grip" in advice_lower:
-            form_tips.append("Check your grip - hold firmly but not too tight")
-        if "posture" in advice_lower or ("back" in advice_lower and "straight" in advice_lower):
-            form_tips.append("Keep your back straight and shoulders relaxed")
-        if "knee" in advice_lower and "bent" in advice_lower:
-            form_tips.append("Keep knees slightly bent for better balance")
-        
-        if form_tips:
-            summary_parts.append("FORM & TECHNIQUE:")
-            summary_parts.extend([f"• {tip}" for tip in form_tips])
-        
-        # Movement and Control section
-        movement_tips = []
-        if "smooth" in advice_lower:
-            movement_tips.append("Focus on smooth, controlled movements")
-        if "balance" in advice_lower:
-            movement_tips.append("Maintain good balance throughout the motion")
-        if "core" in advice_lower:
-            movement_tips.append("Engage your core muscles for stability")
-        if "follow" in advice_lower and "through" in advice_lower:
-            movement_tips.append("Complete your follow-through motion")
-        if "timing" in advice_lower:
-            movement_tips.append("Work on timing and rhythm")
-        
-        if movement_tips:
-            summary_parts.append("\nMOVEMENT QUALITY:")
-            summary_parts.extend([f"• {tip}" for tip in movement_tips])
-        
-        # Body Positioning section
-        positioning_tips = []
-        if "alignment" in advice_lower or "aligned" in advice_lower:
-            positioning_tips.append("Keep your body properly aligned")
-        if "weight" in advice_lower and "balance" in advice_lower:
-            positioning_tips.append("Distribute weight evenly on both feet")
-        if "shoulder" in advice_lower:
-            positioning_tips.append("Keep shoulders level and relaxed")
-        if "head" in advice_lower and ("up" in advice_lower or "neutral" in advice_lower):
-            positioning_tips.append("Maintain neutral head position")
-        
-        if positioning_tips:
-            summary_parts.append("\nBODY POSITION:")
-            summary_parts.extend([f"• {tip}" for tip in positioning_tips])
-        
-        # Safety and Tips section
-        safety_tips = []
-        if "safety" in advice_lower or "gear" in advice_lower:
-            safety_tips.append("Always wear appropriate safety equipment")
-        if "warm" in advice_lower and "up" in advice_lower:
-            safety_tips.append("Warm up properly before exercising")
-        if "control" in advice_lower:
-            safety_tips.append("Stay in control of your movements")
-        if "injury" in advice_lower:
-            safety_tips.append("Avoid movements that could cause injury")
-        
-        # Add chunk-specific tips based on progression
-        progression_tips = [
-            "Start slowly and build up intensity gradually",
-            "Focus on consistency over speed",
-            "Practice the movement pattern without equipment first",
-            "Record yourself to check your form regularly",
-            "Take breaks when you feel fatigued"
+        # Create summarization prompt with specific instructions
+        messages = [
+            {
+                "role": "system",
+                "content": f"""You are a fitness coach creating video coaching summaries. 
+
+CRITICAL INSTRUCTIONS:
+1) PLEASE DON'T BE REPETITIVE - sound different from previous advice
+2) PLEASE USE PLAIN TEXT and maintain in 80 words maximum
+
+Create a concise, practical summary focused on NEW coaching points. Avoid generic advice. Be specific and actionable.{memory_context}"""
+            },
+            {
+                "role": "user",
+                "content": f"""This is segment {chunk_index + 1} of a workout video.
+
+DETAILED ANALYSIS:
+{advice}
+
+Please create a 80-word summary with NEW coaching advice that hasn't been mentioned before. Use plain text, no formatting, no bullet points."""
+            }
         ]
         
-        if chunk_index < len(progression_tips):
-            safety_tips.append(progression_tips[chunk_index])
+        # Prepare the input
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(
+            text=text,
+            return_tensors="pt",
+            padding=True
+        ).to(self.device)
         
-        if safety_tips:
-            summary_parts.append("\nSAFETY & TIPS:")
-            summary_parts.extend([f"• {tip}" for tip in safety_tips])
+        # Generate summary
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=100,  # Allow enough tokens for 80 words
+                temperature=0.8,  # Higher temperature for more variety
+                do_sample=True,
+                top_p=0.9
+            )
         
-        # If we didn't extract much, provide a structured fallback
-        if not summary_parts:
-            fallback_sections = [
-                ("FUNDAMENTALS:", ["Focus on proper form", "Maintain good posture", "Control your breathing"]),
-                ("TECHNIQUE:", ["Start with basic movements", "Build muscle memory", "Practice consistently"]),
-                ("PROGRESSION:", ["Increase difficulty gradually", "Focus on quality over quantity", "Listen to your body"]),
-                ("MINDSET:", ["Stay focused and present", "Be patient with progress", "Celebrate small improvements"]),
-                ("RECOVERY:", ["Allow adequate rest", "Stay hydrated", "Stretch after exercise"])
+        # Decode the full response
+        full_response = self.processor.decode(outputs[0], skip_special_tokens=True)
+        
+        # Find where the AI's actual response starts
+        # The response typically comes after the user message
+        response_markers = [
+            "Please create a 80-word summary",
+            "DETAILED ANALYSIS:",
+            "assistant\n",
+            "Assistant:",
+            "\n\n"  # Sometimes the response starts after double newline
+        ]
+        
+        summary = full_response
+        for marker in response_markers:
+            if marker in summary:
+                parts = summary.split(marker)
+                # Take the last part which should be the AI's response
+                potential_summary = parts[-1].strip()
+                if potential_summary and len(potential_summary) > 20:
+                    summary = potential_summary
+                    break
+        
+        # Additional cleanup - remove any remaining prompt text
+        unwanted_phrases = [
+            "with NEW coaching advice",
+            "that hasn't been mentioned before",
+            "Use plain text",
+            "no formatting",
+            "no bullet points",
+            "CRITICAL INSTRUCTIONS",
+            "PLEASE DON'T BE REPETITIVE",
+            "PLEASE USE PLAIN TEXT"
+        ]
+        
+        for phrase in unwanted_phrases:
+            summary = summary.replace(phrase, "")
+        
+        # Final cleanup
+        summary = summary.replace("Assistant:", "").replace("assistant\n", "").replace("assistant", "").strip()
+        summary = summary.replace("•", "").replace("-", "").replace("*", "")
+        
+        # Clean up any multiple spaces
+        summary = ' '.join(summary.split())
+        
+        # Ensure it's not too long
+        words = summary.split()
+        if len(words) > 80:
+            summary = ' '.join(words[:80])
+        
+        # If we still have prompt text or summary is too short, use a simple fallback
+        if len(summary.strip()) < 20 or any(phrase in summary for phrase in ["NEW coaching", "80-word", "DETAILED ANALYSIS"]):
+            # Simple, direct fallbacks
+            fallbacks = [
+                "Watch your foot placement during the movement. Your weight should shift smoothly from heel to toe. Focus on creating a stable base before initiating the exercise. This foundation will help you maintain balance throughout the entire range of motion.",
+                "Notice how your breathing affects your performance. Exhale during the exertion phase and inhale during the recovery. Proper breathing helps maintain core stability and provides oxygen to working muscles. Never hold your breath during exercise.",
+                "Your tempo seems rushed in this segment. Slow down the movement to feel each muscle working. A controlled pace allows better muscle activation and reduces injury risk. Count two seconds up, two seconds down.",
+                "Check the alignment of your joints throughout the movement. Your knees should track over your toes, not cave inward. This proper alignment protects your joints and ensures the right muscles are doing the work.",
+                "Consider your range of motion here. You're cutting the movement short. Work through the full range to maximize muscle engagement and flexibility. Start with what's comfortable and gradually increase as you improve."
             ]
-            
-            section = fallback_sections[chunk_index % len(fallback_sections)]
-            summary_parts.append(section[0])
-            summary_parts.extend([f"• {tip}" for tip in section[1]])
-        
-        # Join all parts
-        summary = "\n".join(summary_parts)
-        
-        # Add a motivational footer
-        motivational_quotes = [
-            "\n💪 Remember: Progress, not perfection!",
-            "\n🎯 Focus on form first, speed second!",
-            "\n⭐ Every rep is a step toward improvement!",
-            "\n🔥 Consistency beats intensity!",
-            "\n🏆 You're building strength with every movement!"
-        ]
-        
-        summary += motivational_quotes[chunk_index % len(motivational_quotes)]
+            summary = fallbacks[chunk_index % len(fallbacks)]
         
         return summary
         
@@ -358,7 +362,7 @@ class VideoCoachingProcessor:
         Create a side panel with text instead of overlay.
         
         Args:
-            text: Text to display
+            text: Text to display (plain text, ~80 words)
             video_size: (width, height) of original video
             duration: Duration of the clip
             
@@ -375,63 +379,47 @@ class VideoCoachingProcessor:
         panel_img = Image.new('RGB', (panel_width, height), color='black')
         draw = ImageDraw.Draw(panel_img)
         
-        # Try to use fonts of different sizes for headers and body text
+        # Use a single, readable font for plain text
         try:
-            header_font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 22)
-            body_font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 18)
+            font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 24)
         except:
-            header_font = ImageFont.load_default()
-            body_font = ImageFont.load_default()
+            font = ImageFont.load_default()
         
-        # Split text into lines and process
-        lines = text.split('\n')
-        y = 30  # Start 30px from top
-        margin = 20  # Left margin
-        max_width = panel_width - (margin * 2)  # Account for both margins
+        # Simple text wrapping for plain text
+        margin = 30
+        max_width = panel_width - (margin * 2)
+        y = 50  # Start from top with some padding
         
-        for line in lines:
-            if not line.strip():
-                y += 10  # Small gap for empty lines
-                continue
+        # Split into words and wrap
+        words = text.split()
+        lines = []
+        current_line = ""
+        
+        for word in words:
+            test_line = current_line + " " + word if current_line else word
+            bbox = draw.textbbox((0, 0), test_line, font=font)
             
-            # Check if this is a header (ends with colon and is all caps)
-            is_header = line.strip().endswith(':') and any(c.isupper() for c in line.strip())
-            current_font = header_font if is_header else body_font
-            
-            # Use different colors for headers
-            color = 'yellow' if is_header else 'white'
-            
-            # Word wrap for long lines
-            if len(line) > 60 or draw.textbbox((0, 0), line, font=current_font)[2] > max_width:
-                words = line.split()
-                current_line = ""
-                
-                for word in words:
-                    test_line = current_line + " " + word if current_line else word
-                    bbox = draw.textbbox((0, 0), test_line, font=current_font)
-                    
-                    if bbox[2] <= max_width:
-                        current_line = test_line
-                    else:
-                        if current_line:
-                            draw.text((margin, y), current_line, fill=color, font=current_font)
-                            y += 25
-                        current_line = word
-                
-                if current_line:
-                    draw.text((margin, y), current_line, fill=color, font=current_font)
-                    y += 25
+            if bbox[2] <= max_width:
+                current_line = test_line
             else:
-                draw.text((margin, y), line, fill=color, font=current_font)
-                y += 25
-            
-            # Add extra spacing after headers
-            if is_header:
-                y += 5
-            
-            # Stop if we're running out of space
-            if y > height - 50:
+                if current_line:
+                    lines.append(current_line)
+                current_line = word
+        
+        if current_line:
+            lines.append(current_line)
+        
+        # Draw the text lines
+        line_height = 35  # Spacing between lines
+        for line in lines:
+            if y + line_height > height - 50:  # Stop if running out of space
                 break
+            draw.text((margin, y), line, fill='white', font=font)
+            y += line_height
+        
+        # Add segment indicator at the bottom
+        segment_text = f"Segment {duration//2:.0f}"  # Rough segment number
+        draw.text((margin, height - 40), segment_text, fill='gray', font=font)
         
         # Convert PIL image to numpy array
         panel_array = np.array(panel_img)
@@ -490,7 +478,7 @@ class VideoCoachingProcessor:
                 all_advice.append(f"Segment {i+1}: {advice}")
                 
                 # Summarize the advice for the overlay
-                summary = self.summarize_advice(advice, i)
+                summary = self.summarize_advice(advice, i, previous_advice_summaries)
                 previous_advice_summaries.append(summary)  # Add the summary to the list
                 
                 # Save to memory
