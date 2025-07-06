@@ -1,4 +1,4 @@
-# MyoCouch - Discord bot for video coaching with Qwen2-VL
+# MyoCouch - Discord bot for video coaching with AI vision model
 import os
 import discord
 from discord.ext import commands
@@ -14,7 +14,7 @@ from tempfile import NamedTemporaryFile
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DEBUG_GUILD_ID = os.getenv("DEBUG_GUILD_ID")
-MODEL_SIZE = os.getenv("QWEN2VL_MODEL_SIZE", "7B")  # Default to 7B
+MODEL_SIZE = os.getenv("MODEL_SIZE", "2B")  # Default to 2B
 
 if not TOKEN:
     raise RuntimeError("DISCORD_BOT_TOKEN missing from environment or .env file.")
@@ -34,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger('MyoCouch')
 
 # Initialize video processor
-logger.info(f"Initializing Qwen2-VL with model size: {MODEL_SIZE}")
+logger.info(f"Initializing AI vision model with size: {MODEL_SIZE}")
 video_processor = VideoCoachingProcessor(model_size=MODEL_SIZE)
 
 # Video coaching slash command
@@ -69,9 +69,9 @@ async def couch_command(
     try:
         # Send initial processing message
         embed = discord.Embed(
-            title="🎬 Processing Your Video with Qwen2-VL",
+            title="🎬 Processing Your Video with AI",
             description=f"**Step 1/4:** Downloading video...\n"
-                       f"Model: Qwen2-VL-{MODEL_SIZE}",
+                       f"Model: AI Vision-{MODEL_SIZE}",
             color=discord.Color.blue()
         )
         embed.set_footer(text="This may take a few minutes depending on video length")
@@ -87,34 +87,16 @@ async def couch_command(
         
         # Update status
         embed.description = f"**Step 2/4:** Analyzing video with AI...\n" \
-                          f"Model: Qwen2-VL-{MODEL_SIZE}"
+                          f"Model: AI Vision-{MODEL_SIZE}"
         await processing_msg.edit(embed=embed)
         
         # Process the video in a separate thread
         loop = asyncio.get_event_loop()
-        try:
-            coaching_result = await loop.run_in_executor(
-                None,
-                video_processor.process_video,
-                tmp_path
-            )
-        except Exception as e:
-            logger.error(f"Video processing error: {str(e)}")
-            # Try with smaller model if we ran out of memory
-            if "CUDA out of memory" in str(e) and MODEL_SIZE == "7B":
-                embed.description = "**Switching to smaller model due to memory constraints...**"
-                await processing_msg.edit(embed=embed)
-                
-                # Reinitialize with smaller model
-                video_processor = VideoCoachingProcessor(model_size="2B")
-                
-                coaching_result = await loop.run_in_executor(
-                    None,
-                    video_processor.process_video,
-                    tmp_path
-                )
-            else:
-                raise
+        coaching_result = await loop.run_in_executor(
+            None,
+            video_processor.process_video,
+            tmp_path
+        )
         
         # Check if processing was successful
         if coaching_result['status'] != 'success':
@@ -122,7 +104,7 @@ async def couch_command(
         
         # Update status
         embed.description = f"**Step 3/4:** Creating coached video with overlays...\n" \
-                          f"Model: {coaching_result.get('model_used', 'Qwen2-VL')}"
+                          f"Model: {coaching_result.get('model_used', 'AI Vision')}"
         await processing_msg.edit(embed=embed)
         
         # Create success embed
@@ -159,7 +141,7 @@ async def couch_command(
         
         success_embed.add_field(
             name="🤖 AI Model Used",
-            value=coaching_result.get('model_used', 'Qwen2-VL'),
+            value=coaching_result.get('model_used', 'AI Vision'),
             inline=True
         )
         
@@ -219,7 +201,7 @@ async def couch_command(
 async def on_ready():
     """Called when the bot is ready and connected to Discord."""
     logger.info(f'MyoCouch is online as {bot.user} (ID: {bot.user.id})')
-    logger.info(f'Using Qwen2-VL-{MODEL_SIZE} for video analysis')
+    logger.info(f'Using AI Vision-{MODEL_SIZE} for video analysis')
     
     # Show memory usage if using GPU
     try:
@@ -245,7 +227,7 @@ async def on_ready():
 
 def main():
     """Start the MyoCouch bot."""
-    logger.info("Starting MyoCouch Discord Bot with Qwen2-VL...")
+    logger.info("Starting MyoCouch Discord Bot with AI Vision...")
     logger.info("Use /couch command to upload a video for AI coaching analysis")
     logger.info(f"Configured model size: {MODEL_SIZE}")
     bot.run(TOKEN)

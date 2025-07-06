@@ -2,7 +2,7 @@
 import cv2
 import numpy as np
 import torch
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from typing import Dict, List, Tuple, Optional
 import logging
 from pathlib import Path
@@ -17,14 +17,14 @@ logger = logging.getLogger('MyoCouch.VideoProcessor')
 
 
 class VideoCoachingProcessor:
-    """Processes videos for coaching analysis using Qwen2-VL Video Language Model."""
+    """Processes videos for coaching analysis using AI vision language model."""
     
-    def __init__(self, model_size: str = "7B"):
+    def __init__(self, model_size: str = "2B"):
         """
-        Initialize the video processor with Qwen2-VL.
+        Initialize the video processor with AI vision model.
         
         Args:
-            model_size: Model size - "2B" or "7B" (default)
+            model_size: Model size - "2B" (default) or "7B"
         """
         self.model_size = model_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,37 +35,21 @@ class VideoCoachingProcessor:
             "7B": "Qwen/Qwen2-VL-7B-Instruct"
         }
         
-        model_path = model_mapping.get(model_size, model_mapping["7B"])
+        model_path = model_mapping.get(model_size, model_mapping["2B"])
         logger.info(f"Loading Qwen2-VL model: {model_path}")
         
-        try:
-            # Load processor and model
-            self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
-                trust_remote_code=True
-            )
-            
-            if not torch.cuda.is_available():
-                self.model = self.model.to(self.device)
-                
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            # Fallback to 2B model if 7B fails
-            if model_size == "7B":
-                logger.info("Falling back to 2B model...")
-                self.model_size = "2B"
-                model_path = model_mapping["2B"]
-                self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True
-                )
+        # Load processor and model
+        self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None,
+            trust_remote_code=True
+        )
         
+        if not torch.cuda.is_available():
+            self.model = self.model.to(self.device)
+                
         # Video processing parameters
         self.target_fps = 30
         self.chunk_size = 60  # frames per chunk
@@ -170,7 +154,7 @@ class VideoCoachingProcessor:
     
     def analyze_video_chunk(self, chunk: np.ndarray) -> str:
         """
-        Analyze a video chunk using Qwen2-VL and return coaching advice.
+        Analyze a video chunk using AI vision model and return coaching advice.
         
         Args:
             chunk: Video chunk as numpy array (frames, height, width, channels)
@@ -178,60 +162,56 @@ class VideoCoachingProcessor:
         Returns:
             Coaching advice text
         """
-        try:
-            # Sample frames from the chunk
-            frames = self.sample_frames_from_chunk(chunk, self.frames_per_analysis)
-            
-            # Create the conversation format for Qwen2-VL
-            messages = [
-                {
-                    "role": "system",
-                    "content": self.coaching_prompt
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Analyze this exercise video segment:"},
-                    ] + [{"type": "image"} for _ in frames]
-                }
-            ]
-            
-            # Prepare the input using the processor
-            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = self.processor(
-                text=text,
-                images=frames,
-                return_tensors="pt",
-                padding=True
-            ).to(self.device)
-            
-            # Generate coaching advice
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=150,
-                    temperature=0.7,
-                    do_sample=True,
-                    top_p=0.9
-                )
-            
-            # Decode the response
-            response = self.processor.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract only the assistant's response
-            if "Analyze this exercise video segment:" in response:
-                advice = response.split("Analyze this exercise video segment:")[-1].strip()
-            else:
-                advice = response.strip()
-            
-            # Clean up the advice
-            advice = advice.replace("Assistant:", "").strip()
-            
-            return advice
-            
-        except Exception as e:
-            logger.error(f"Error analyzing chunk: {e}")
-            return "Focus on maintaining proper form throughout the movement."
+        # Sample frames from the chunk
+        frames = self.sample_frames_from_chunk(chunk, self.frames_per_analysis)
+        
+        # Create the conversation format for the AI model
+        messages = [
+            {
+                "role": "system",
+                "content": self.coaching_prompt
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Analyze this exercise video segment:"},
+                ] + [{"type": "image"} for _ in frames]
+            }
+        ]
+        
+        # Prepare the input using the processor
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(
+            text=text,
+            images=frames,
+            return_tensors="pt",
+            padding=True
+        ).to(self.device)
+        
+        # Generate coaching advice
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=150,
+                temperature=0.7,
+                do_sample=True,
+                top_p=0.9
+            )
+        
+        # Decode the response
+        response = self.processor.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extract only the assistant's response
+        if "Analyze this exercise video segment:" in response:
+            advice = response.split("Analyze this exercise video segment:")[-1].strip()
+        else:
+            advice = response.strip()
+        
+        # Clean up the advice
+        advice = advice.replace("Assistant:", "").strip()
+        
+        return advice
+        
     
     def create_overlay_text(self, text: str, video_size: Tuple[int, int], duration: float) -> TextClip:
         """
@@ -389,7 +369,7 @@ class VideoCoachingProcessor:
                 },
                 'coaching_segments': all_advice,
                 'output_video_path': output_path,
-                'model_used': f'Qwen2-VL-{self.model_size}'
+                'model_used': f'AI Vision-{self.model_size}'
             }
             
             logger.info(f"Video processing complete. Output saved to: {output_path}")
