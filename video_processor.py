@@ -343,18 +343,6 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
         if len(words) > 80:
             summary = ' '.join(words[:80])
         
-        # If we still have prompt text or summary is too short, use a simple fallback
-        if len(summary.strip()) < 20 or any(phrase in summary for phrase in ["NEW coaching", "80-word", "DETAILED ANALYSIS"]):
-            # Simple, direct fallbacks
-            fallbacks = [
-                "Watch your foot placement during the movement. Your weight should shift smoothly from heel to toe. Focus on creating a stable base before initiating the exercise. This foundation will help you maintain balance throughout the entire range of motion.",
-                "Notice how your breathing affects your performance. Exhale during the exertion phase and inhale during the recovery. Proper breathing helps maintain core stability and provides oxygen to working muscles. Never hold your breath during exercise.",
-                "Your tempo seems rushed in this segment. Slow down the movement to feel each muscle working. A controlled pace allows better muscle activation and reduces injury risk. Count two seconds up, two seconds down.",
-                "Check the alignment of your joints throughout the movement. Your knees should track over your toes, not cave inward. This proper alignment protects your joints and ensures the right muscles are doing the work.",
-                "Consider your range of motion here. You're cutting the movement short. Work through the full range to maximize muscle engagement and flexibility. Start with what's comfortable and gradually increase as you improve."
-            ]
-            summary = fallbacks[chunk_index % len(fallbacks)]
-        
         return summary
         
     
@@ -589,4 +577,382 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
             }
             
             logger.info(f"Video processing complete. Output saved to: {output_path}")
+            return results
+    
+    def compare_motions(self, video1_path: str, video2_path: str) -> Dict:
+        """
+        Compare two videos side by side and analyze which has better form.
+        
+        Args:
+            video1_path: Path to first video
+            video2_path: Path to second video
+            
+        Returns:
+            Dictionary with comparison results
+        """
+        logger.info(f"Comparing videos: {video1_path} vs {video2_path}")
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Step 1: Downsample both videos to 30 FPS
+            logger.info("Downsampling videos to 30 FPS...")
+            downsampled1 = os.path.join(temp_dir, "video1_downsampled.mp4")
+            downsampled2 = os.path.join(temp_dir, "video2_downsampled.mp4")
+            
+            self.downsample_video(video1_path, downsampled1, self.target_fps)
+            self.downsample_video(video2_path, downsampled2, self.target_fps)
+            
+            # Step 2: Extract first 5 seconds (150 frames) from each video
+            logger.info("Extracting first 5 seconds from each video...")
+            frames_to_extract = 150  # 5 seconds at 30 fps
+            
+            # Extract frames from video 1
+            cap1 = cv2.VideoCapture(downsampled1)
+            frames1 = []
+            for _ in range(frames_to_extract):
+                ret, frame = cap1.read()
+                if not ret:
+                    break
+                frames1.append(frame)
+            cap1.release()
+            
+            # Extract frames from video 2
+            cap2 = cv2.VideoCapture(downsampled2)
+            frames2 = []
+            for _ in range(frames_to_extract):
+                ret, frame = cap2.read()
+                if not ret:
+                    break
+                frames2.append(frame)
+            cap2.release()
+            
+            # Make both videos same length
+            min_frames = min(len(frames1), len(frames2))
+            frames1 = frames1[:min_frames]
+            frames2 = frames2[:min_frames]
+            
+            logger.info(f"Extracted {min_frames} frames from each video")
+            
+            # Get dimensions early for use in analysis
+            h1, w1 = frames1[0].shape[:2]
+            h2, w2 = frames2[0].shape[:2]
+            
+            # Step 3: Analyze with VLM first to get the text for the panel
+            logger.info("Analyzing motion differences with AI...")
+            
+            # Sample frames for analysis (every 30 frames = 1 per second)
+            sample_indices = range(0, min_frames, 30)[:5]  # 5 frames, one per second
+            
+            analysis_frames = []
+            for idx in sample_indices:
+                # Convert BGR to RGB for PIL
+                frame1_rgb = cv2.cvtColor(frames1[idx], cv2.COLOR_BGR2RGB)
+                frame2_rgb = cv2.cvtColor(frames2[idx], cv2.COLOR_BGR2RGB)
+                
+                # Resize for analysis
+                frame1_small = cv2.resize(frame1_rgb, (320, int(320 * h1 / w1)))
+                frame2_small = cv2.resize(frame2_rgb, (320, int(320 * h2 / w2)))
+                
+                # Create side by side for analysis
+                combined_rgb = np.hstack([frame1_small, frame2_small])
+                pil_image = Image.fromarray(combined_rgb)
+                analysis_frames.append(pil_image)
+            
+            # Create comparison prompt
+            messages = [
+                {
+                    "role": "system",
+                    "content": """You are MyoCouch, an expert fitness coach comparing two exercise videos.
+                    Your job is to determine which video is better in the exercise and explain why.
+                    
+                    RULES:
+                    1. You MUST pick a winner - either Video 1 or Video 2
+                    2. Be CRITICAL and DIRECT about errors
+                    3. Don't sugarcoat problems - point them out clearly
+                    
+                    Format EXACTLY as:
+                    VERDICT: Video [1 or 2] has better form because [two specific reasons]
+                    VIDEO 1: [If winner: Why the form is superior. If loser: What specific errors you see. Max 3 short sentences]
+                    VIDEO 2: [If winner: Why the form is superior. If loser: What specific errors you see. Max 3 short sentences]
+                    """
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Compare these two exercise videos. Video 1 is on the left, Video 2 is on the right."},
+                    ] + [{"type": "image"} for _ in analysis_frames]
+                }
+            ]
+            
+            # Get AI analysis
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.processor(
+                text=text,
+                images=analysis_frames,
+                return_tensors="pt",
+                padding=True
+            ).to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=200,  # Reduced for concise responses
+                    temperature=0.6,  # Lower temperature for more focused output
+                    do_sample=True,
+                    top_p=0.9
+                )
+            
+            # Decode response
+            full_response = self.processor.decode(outputs[0], skip_special_tokens=True)
+            
+            # Extract analysis
+            analysis = full_response
+            if "Compare these two exercise videos" in analysis:
+                parts = analysis.split("Compare these two exercise videos")
+                if len(parts) > 1:
+                    analysis = parts[-1].strip()
+            
+            # Parse the structured response
+            verdict = ""
+            video1_analysis = ""
+            video2_analysis = ""
+            
+            lines = analysis.split('\n')
+            current_section = ""
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if line.upper().startswith("VERDICT:"):
+                    verdict = line.replace("VERDICT:", "").strip()
+                    current_section = "verdict"
+                elif line.upper().startswith("VIDEO 1:"):
+                    video1_analysis = line.replace("VIDEO 1:", "").replace("Video 1:", "").strip()
+                    current_section = "video1"
+                elif line.upper().startswith("VIDEO 2:"):
+                    video2_analysis = line.replace("VIDEO 2:", "").replace("Video 2:", "").strip()
+                    current_section = "video2"
+                else:
+                    # Continue adding to current section
+                    if current_section == "verdict" and verdict and not line.upper().startswith("VIDEO"):
+                        verdict += " " + line
+                    elif current_section == "video1" and not line.upper().startswith("VIDEO"):
+                        video1_analysis += " " + line
+                    elif current_section == "video2":
+                        video2_analysis += " " + line
+            
+            # Clean up and ensure we have content
+            verdict = verdict.strip()
+            video1_analysis = video1_analysis.strip()
+            video2_analysis = video2_analysis.strip()
+            
+            # Step 4: Create side-by-side video with text panel at bottom
+            logger.info("Creating side-by-side comparison video with analysis panel...")
+            
+            # Get dimensions
+            h1, w1 = frames1[0].shape[:2]
+            h2, w2 = frames2[0].shape[:2]
+            
+            # Resize to same height
+            video_height = min(h1, h2, 360)  # Good balance with efficient text panel
+            
+            # Calculate new widths maintaining aspect ratio
+            new_w1 = int(w1 * video_height / h1)
+            new_w2 = int(w2 * video_height / h2)
+            
+            # Total dimensions
+            total_width = new_w1 + new_w2
+            panel_height = 200  # Balanced height for efficient text display
+            total_height = video_height + panel_height
+            
+            # Create temporary video without text panel first
+            temp_video_path = os.path.join(temp_dir, "temp_comparison.mp4")
+            
+            # Process with MoviePy for better control
+            from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, ImageClip, clips_array, concatenate_videoclips
+            
+            # Create video clips from frames
+            video_frames = []
+            
+            for i in range(min_frames):
+                # Resize frames
+                frame1_resized = cv2.resize(frames1[i], (new_w1, video_height))
+                frame2_resized = cv2.resize(frames2[i], (new_w2, video_height))
+                
+                # Convert to RGB
+                frame1_rgb = cv2.cvtColor(frame1_resized, cv2.COLOR_BGR2RGB)
+                frame2_rgb = cv2.cvtColor(frame2_resized, cv2.COLOR_BGR2RGB)
+                
+                # Concatenate horizontally
+                combined_frame = np.hstack([frame1_rgb, frame2_rgb])
+                
+                # Add labels
+                pil_frame = Image.fromarray(combined_frame)
+                draw = ImageDraw.Draw(pil_frame)
+                
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 30)
+                except:
+                    font = ImageFont.load_default()
+                
+                # Draw video labels
+                draw.text((20, 20), "Video 1", fill=(100, 200, 255), font=font)  # Light blue
+                draw.text((new_w1 + 20, 20), "Video 2", fill=(255, 150, 100), font=font)  # Light orange
+                
+                video_frames.append(np.array(pil_frame))
+            
+            # Create video from frames
+            video_clip = ImageClip(video_frames[0], duration=1/self.target_fps)
+            clips = [ImageClip(frame, duration=1/self.target_fps) for frame in video_frames]
+            video_sequence = concatenate_videoclips(clips, method="compose")
+            
+            # Create text panel
+            text_panel_img = Image.new('RGB', (total_width, panel_height), color='black')
+            draw = ImageDraw.Draw(text_panel_img)
+            
+            # Format text for panel
+            try:
+                header_font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 12)
+                body_font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 12)
+            except:
+                header_font = ImageFont.load_default()
+                body_font = ImageFont.load_default()
+            
+            # Draw text on panel
+            y_offset = 10
+            margin = 15
+            
+            # Verdict - inline with text
+            draw.text((margin, y_offset), "Winner:", fill=(255, 255, 255), font=header_font)
+            verdict_x_offset = margin + 50  # Start verdict text after "Winner:"
+            
+            # Wrap verdict text
+            verdict_words = verdict.split()
+            verdict_lines = []
+            current_line = ""
+            first_line = True
+            for word in verdict_words:
+                test_line = current_line + " " + word if current_line else word
+                bbox = draw.textbbox((0, 0), test_line, font=body_font)
+                max_verdict_width = total_width - verdict_x_offset - margin if first_line else total_width - (margin * 2)
+                if bbox[2] <= max_verdict_width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        verdict_lines.append(current_line)
+                        first_line = False
+                    current_line = word
+            if current_line:
+                verdict_lines.append(current_line)
+            
+            # Draw verdict text
+            for i, line in enumerate(verdict_lines[:3]):
+                if i == 0:
+                    draw.text((verdict_x_offset, y_offset), line, fill=(200, 200, 200), font=body_font)
+                else:
+                    draw.text((margin, y_offset), line, fill=(200, 200, 200), font=body_font)
+                y_offset += 14
+            
+            y_offset += 10  # Space before analysis sections
+            
+            # Video 1 Analysis
+            left_column_x = margin
+            analysis_y_start = y_offset
+            draw.text((left_column_x, y_offset), "V1:", fill=(100, 200, 255), font=header_font)  # Light blue
+            y_offset += 14
+            
+            # Wrap video 1 analysis - allow more text
+            v1_words = video1_analysis.split()
+            v1_lines = []
+            current_line = ""
+            max_width = (total_width // 2) - (margin * 3)  # Adjusted for better fit
+            
+            for word in v1_words:
+                test_line = current_line + " " + word if current_line else word
+                bbox = draw.textbbox((0, 0), test_line, font=body_font)
+                if bbox[2] <= max_width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        v1_lines.append(current_line)
+                    current_line = word
+            if current_line:
+                v1_lines.append(current_line)
+            
+            v1_y = y_offset
+            max_lines = 4  # 2 sentences should fit in 3-4 lines max
+            for i, line in enumerate(v1_lines[:max_lines]):
+                if v1_y + 14 > panel_height - 10:  # Stop if running out of space
+                    break
+                draw.text((left_column_x, v1_y), line, fill=(200, 200, 200), font=body_font)
+                v1_y += 14
+            
+            # Video 2 Analysis (right column)
+            right_column_x = total_width // 2 + margin
+            draw.text((right_column_x, analysis_y_start), "V2:", fill=(255, 150, 100), font=header_font)  # Light orange
+            
+            # Wrap video 2 analysis
+            v2_words = video2_analysis.split()
+            v2_lines = []
+            current_line = ""
+            
+            for word in v2_words:
+                test_line = current_line + " " + word if current_line else word
+                bbox = draw.textbbox((0, 0), test_line, font=body_font)
+                if bbox[2] <= max_width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        v2_lines.append(current_line)
+                    current_line = word
+            if current_line:
+                v2_lines.append(current_line)
+            
+            v2_y = analysis_y_start + 14  # Start at same height as video 1 text
+            for i, line in enumerate(v2_lines[:max_lines]):
+                if v2_y + 14 > panel_height - 10:  # Stop if running out of space
+                    break
+                draw.text((right_column_x, v2_y), line, fill=(200, 200, 200), font=body_font)
+                v2_y += 14
+            
+            # Convert panel to video clip
+            panel_array = np.array(text_panel_img)
+            panel_clip = ImageClip(panel_array, duration=video_sequence.duration)
+            
+            # Stack video and panel vertically
+            final_video = clips_array([[video_sequence], [panel_clip]])
+            
+            # Final output path
+            final_output = video1_path.replace('.mp4', '_comparison.mp4')
+            
+            # Write final video
+            final_video.write_videofile(
+                final_output,
+                fps=self.target_fps,
+                codec='libx264',
+                audio=False,
+                preset='ultrafast',
+                logger=None,
+                ffmpeg_params=['-crf', '23']  # Better quality
+            )
+            
+            # Clean up
+            video_sequence.close()
+            panel_clip.close()
+            final_video.close()
+            
+            # Prepare results
+            results = {
+                'status': 'success',
+                'verdict': verdict,
+                'video1_analysis': video1_analysis.strip(),
+                'video2_analysis': video2_analysis.strip(),
+                'output_video_path': final_output,
+                'model_used': f'AI Vision-{self.model_size}',
+                'frames_analyzed': min_frames,
+                'duration_seconds': min_frames / self.target_fps
+            }
+            
+            logger.info(f"Motion comparison complete. Output saved to: {final_output}")
             return results 

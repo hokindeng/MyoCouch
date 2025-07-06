@@ -319,6 +319,173 @@ async def couch_command(
             os.remove(tmp_path)
 
 
+# Motion comparison slash command
+@bot.slash_command(
+    name="motiondiff",
+    description="Compare two workout videos side-by-side to see which has better form"
+)
+async def motiondiff_command(
+    ctx: discord.ApplicationContext,
+    video1: discord.Option(
+        discord.Attachment,
+        description="First workout video for comparison (max 25MB)",
+        required=True
+    ),
+    video2: discord.Option(
+        discord.Attachment,
+        description="Second workout video for comparison (max 25MB)",
+        required=True
+    )
+):
+    """Compare two videos side by side and analyze which has better form."""
+    global video_processor
+    
+    # Defer the response
+    await ctx.defer()
+    
+    # Validate file types
+    for video in [video1, video2]:
+        if not video.filename.lower().endswith(('.mp4', '.mov', '.avi', '.webm', '.mkv')):
+            await ctx.followup.send(f"❌ {video.filename} is not a valid video file. Please upload MP4, MOV, AVI, WEBM, or MKV files.")
+            return
+    
+    # Check file sizes
+    for video in [video1, video2]:
+        if video.size > 25 * 1024 * 1024:
+            await ctx.followup.send(f"❌ {video.filename} is too large. Please upload videos under 25MB.")
+            return
+    
+    try:
+        # Send initial processing message
+        embed = discord.Embed(
+            title="🎬 Comparing Your Videos",
+            description=f"**Step 1/3:** Downloading videos...\n"
+                       f"Model: AI Vision-{MODEL_SIZE}",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="This will analyze the first 5 seconds of each video")
+        processing_msg = await ctx.followup.send(embed=embed)
+        
+        # Download both videos
+        video1_data = await video1.read()
+        video2_data = await video2.read()
+        
+        # Save videos temporarily
+        with NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file1:
+            tmp_file1.write(video1_data)
+            tmp_path1 = tmp_file1.name
+            
+        with NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file2:
+            tmp_file2.write(video2_data)
+            tmp_path2 = tmp_file2.name
+        
+        # Update status
+        embed.description = f"**Step 2/3:** Creating side-by-side comparison...\n" \
+                          f"Model: AI Vision-{MODEL_SIZE}"
+        await processing_msg.edit(embed=embed)
+        
+        # Process the motion comparison
+        loop = asyncio.get_event_loop()
+        comparison_result = await loop.run_in_executor(
+            None,
+            video_processor.compare_motions,
+            tmp_path1,
+            tmp_path2
+        )
+        
+        # Check if processing was successful
+        if comparison_result['status'] != 'success':
+            raise Exception("Motion comparison failed")
+        
+        # Update status
+        embed.description = f"**Step 3/3:** AI is analyzing the differences...\n" \
+                          f"Model: {comparison_result.get('model_used', 'AI Vision')}"
+        await processing_msg.edit(embed=embed)
+        
+        # Create success embed
+        success_embed = discord.Embed(
+            title="✅ Motion Comparison Complete!",
+            description="Your videos have been compared side-by-side with AI analysis.",
+            color=discord.Color.green()
+        )
+        
+        # Add comparison results
+        success_embed.add_field(
+            name="🏆 AI Verdict",
+            value=comparison_result['verdict'],
+            inline=False
+        )
+        
+        success_embed.add_field(
+            name="📊 Video 1 Analysis",
+            value=comparison_result['video1_analysis'][:1024],
+            inline=False
+        )
+        
+        success_embed.add_field(
+            name="📊 Video 2 Analysis", 
+            value=comparison_result['video2_analysis'][:1024],
+            inline=False
+        )
+        
+        success_embed.add_field(
+            name="🤖 AI Model Used",
+            value=comparison_result.get('model_used', 'AI Vision'),
+            inline=True
+        )
+        
+        success_embed.set_footer(text="Upload more videos to compare different techniques!")
+        
+        # Update the message
+        await processing_msg.edit(embed=success_embed)
+        
+        # Send the comparison video
+        output_path = comparison_result['output_video_path']
+        
+        # Check file size
+        output_size = os.path.getsize(output_path)
+        if output_size <= 25 * 1024 * 1024:
+            with open(output_path, 'rb') as f:
+                comparison_video = discord.File(f, filename="motion_comparison.mp4")
+                await ctx.followup.send(
+                    "Here's your side-by-side motion comparison! 🎥",
+                    file=comparison_video
+                )
+        else:
+            await ctx.followup.send(
+                "⚠️ The comparison video is too large to upload to Discord."
+            )
+        
+        # Clean up temporary files
+        try:
+            os.remove(tmp_path1)
+            os.remove(tmp_path2)
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"Error comparing videos: {str(e)}")
+        error_embed = discord.Embed(
+            title="❌ Comparison Error",
+            description=f"Sorry, I couldn't compare your videos.\n\n"
+                       f"**Error:** {str(e)}\n\n"
+                       f"**Tips:**\n"
+                       f"• Use videos under 10 seconds for best results\n"
+                       f"• Ensure both videos show similar exercises\n"
+                       f"• Make sure the movement is clearly visible",
+            color=discord.Color.red()
+        )
+        await processing_msg.edit(embed=error_embed)
+        
+        # Clean up temporary files
+        if 'tmp_path1' in locals() and os.path.exists(tmp_path1):
+            os.remove(tmp_path1)
+        if 'tmp_path2' in locals() and os.path.exists(tmp_path2):
+            os.remove(tmp_path2)
+
+
 @bot.event
 async def on_ready():
     """Called when the bot is ready and connected to Discord."""
