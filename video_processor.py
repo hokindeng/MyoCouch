@@ -8,10 +8,12 @@ import logging
 from pathlib import Path
 import tempfile
 import ffmpeg
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips, ColorClip, clips_array, ImageClip
 import os
 from tqdm import tqdm
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+import json
+from datetime import datetime
 
 logger = logging.getLogger('MyoCouch.VideoProcessor')
 
@@ -35,7 +37,7 @@ class VideoCoachingProcessor:
             "7B": "Qwen/Qwen2-VL-7B-Instruct"
         }
         
-        model_path = model_mapping.get(model_size, model_mapping["2B"])
+        model_path = model_mapping.get(model_size, model_mapping["7B"])
         logger.info(f"Loading Qwen2-VL model: {model_path}")
         
         # Load processor and model
@@ -152,12 +154,14 @@ class VideoCoachingProcessor:
         
         return frames
     
-    def analyze_video_chunk(self, chunk: np.ndarray) -> str:
+    def analyze_video_chunk(self, chunk: np.ndarray, chunk_index: int = 0, previous_advice: List[str] = None) -> str:
         """
         Analyze a video chunk using AI vision model and return coaching advice.
         
         Args:
             chunk: Video chunk as numpy array (frames, height, width, channels)
+            chunk_index: Index of current chunk
+            previous_advice: List of advice from previous chunks to avoid repetition
             
         Returns:
             Coaching advice text
@@ -165,11 +169,26 @@ class VideoCoachingProcessor:
         # Sample frames from the chunk
         frames = self.sample_frames_from_chunk(chunk, self.frames_per_analysis)
         
+        # Build context from previous advice
+        context = ""
+        if previous_advice and len(previous_advice) > 0:
+            context = "\n\nPrevious coaching points covered:\n"
+            for i, advice in enumerate(previous_advice[-2:]):  # Use last 2 pieces of advice
+                context += f"- Segment {i+1}: {advice[:100]}...\n"
+            context += "\nPlease provide NEW advice that hasn't been mentioned yet."
+        
+        # Modified prompt to encourage variety
+        prompt = f"""{self.coaching_prompt}
+        
+        This is segment {chunk_index + 1} of the video.{context}
+        
+        Focus on NEW observations and avoid repeating previous points."""
+        
         # Create the conversation format for the AI model
         messages = [
             {
                 "role": "system",
-                "content": self.coaching_prompt
+                "content": prompt
             },
             {
                 "role": "user",
@@ -192,8 +211,8 @@ class VideoCoachingProcessor:
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=150,
-                temperature=0.7,
+                max_new_tokens=200,  # Increased for more detailed advice
+                temperature=0.8,  # Slightly higher for more variety
                 do_sample=True,
                 top_p=0.9
             )
@@ -208,70 +227,219 @@ class VideoCoachingProcessor:
             advice = response.strip()
         
         # Clean up the advice
-        advice = advice.replace("Assistant:", "").strip()
+        advice = advice.replace("Assistant:", "").replace("assistant\n", "").replace("assistant", "").strip()
         
         return advice
-        
     
-    def create_overlay_text(self, text: str, video_size: Tuple[int, int], duration: float) -> TextClip:
+    def summarize_advice(self, advice: str, chunk_index: int) -> str:
         """
-        Create a text overlay for video.
+        Create a comprehensive summary of the coaching advice.
         
         Args:
-            text: Text to overlay
-            video_size: (width, height) of video
+            advice: Full coaching advice text
+            chunk_index: Index of current chunk
+            
+        Returns:
+            Detailed coaching summary
+        """
+        # Extract key coaching points from the advice
+        summary_parts = []
+        
+        # Clean the advice text
+        advice_lower = advice.lower()
+        
+        # Form and Technique section
+        form_tips = []
+        if "stance" in advice_lower:
+            form_tips.append("Maintain proper stance with feet shoulder-width apart")
+        if "grip" in advice_lower:
+            form_tips.append("Check your grip - hold firmly but not too tight")
+        if "posture" in advice_lower or ("back" in advice_lower and "straight" in advice_lower):
+            form_tips.append("Keep your back straight and shoulders relaxed")
+        if "knee" in advice_lower and "bent" in advice_lower:
+            form_tips.append("Keep knees slightly bent for better balance")
+        
+        if form_tips:
+            summary_parts.append("FORM & TECHNIQUE:")
+            summary_parts.extend([f"• {tip}" for tip in form_tips])
+        
+        # Movement and Control section
+        movement_tips = []
+        if "smooth" in advice_lower:
+            movement_tips.append("Focus on smooth, controlled movements")
+        if "balance" in advice_lower:
+            movement_tips.append("Maintain good balance throughout the motion")
+        if "core" in advice_lower:
+            movement_tips.append("Engage your core muscles for stability")
+        if "follow" in advice_lower and "through" in advice_lower:
+            movement_tips.append("Complete your follow-through motion")
+        if "timing" in advice_lower:
+            movement_tips.append("Work on timing and rhythm")
+        
+        if movement_tips:
+            summary_parts.append("\nMOVEMENT QUALITY:")
+            summary_parts.extend([f"• {tip}" for tip in movement_tips])
+        
+        # Body Positioning section
+        positioning_tips = []
+        if "alignment" in advice_lower or "aligned" in advice_lower:
+            positioning_tips.append("Keep your body properly aligned")
+        if "weight" in advice_lower and "balance" in advice_lower:
+            positioning_tips.append("Distribute weight evenly on both feet")
+        if "shoulder" in advice_lower:
+            positioning_tips.append("Keep shoulders level and relaxed")
+        if "head" in advice_lower and ("up" in advice_lower or "neutral" in advice_lower):
+            positioning_tips.append("Maintain neutral head position")
+        
+        if positioning_tips:
+            summary_parts.append("\nBODY POSITION:")
+            summary_parts.extend([f"• {tip}" for tip in positioning_tips])
+        
+        # Safety and Tips section
+        safety_tips = []
+        if "safety" in advice_lower or "gear" in advice_lower:
+            safety_tips.append("Always wear appropriate safety equipment")
+        if "warm" in advice_lower and "up" in advice_lower:
+            safety_tips.append("Warm up properly before exercising")
+        if "control" in advice_lower:
+            safety_tips.append("Stay in control of your movements")
+        if "injury" in advice_lower:
+            safety_tips.append("Avoid movements that could cause injury")
+        
+        # Add chunk-specific tips based on progression
+        progression_tips = [
+            "Start slowly and build up intensity gradually",
+            "Focus on consistency over speed",
+            "Practice the movement pattern without equipment first",
+            "Record yourself to check your form regularly",
+            "Take breaks when you feel fatigued"
+        ]
+        
+        if chunk_index < len(progression_tips):
+            safety_tips.append(progression_tips[chunk_index])
+        
+        if safety_tips:
+            summary_parts.append("\nSAFETY & TIPS:")
+            summary_parts.extend([f"• {tip}" for tip in safety_tips])
+        
+        # If we didn't extract much, provide a structured fallback
+        if not summary_parts:
+            fallback_sections = [
+                ("FUNDAMENTALS:", ["Focus on proper form", "Maintain good posture", "Control your breathing"]),
+                ("TECHNIQUE:", ["Start with basic movements", "Build muscle memory", "Practice consistently"]),
+                ("PROGRESSION:", ["Increase difficulty gradually", "Focus on quality over quantity", "Listen to your body"]),
+                ("MINDSET:", ["Stay focused and present", "Be patient with progress", "Celebrate small improvements"]),
+                ("RECOVERY:", ["Allow adequate rest", "Stay hydrated", "Stretch after exercise"])
+            ]
+            
+            section = fallback_sections[chunk_index % len(fallback_sections)]
+            summary_parts.append(section[0])
+            summary_parts.extend([f"• {tip}" for tip in section[1]])
+        
+        # Join all parts
+        summary = "\n".join(summary_parts)
+        
+        # Add a motivational footer
+        motivational_quotes = [
+            "\n💪 Remember: Progress, not perfection!",
+            "\n🎯 Focus on form first, speed second!",
+            "\n⭐ Every rep is a step toward improvement!",
+            "\n🔥 Consistency beats intensity!",
+            "\n🏆 You're building strength with every movement!"
+        ]
+        
+        summary += motivational_quotes[chunk_index % len(motivational_quotes)]
+        
+        return summary
+        
+    
+    def create_side_panel(self, text: str, video_size: Tuple[int, int], duration: float) -> VideoFileClip:
+        """
+        Create a side panel with text instead of overlay.
+        
+        Args:
+            text: Text to display
+            video_size: (width, height) of original video
             duration: Duration of the clip
             
         Returns:
-            TextClip object
+            VideoFileClip with black panel containing text
         """
         width, height = video_size
+        panel_width = width  # Panel is same width as video (100%)
         
-        # Format text for better readability
-        lines = text.split('. ')
-        formatted_lines = []
+        # Clean up the text
+        text = text.replace("assistant\n", "").replace("assistant", "").strip()
+        
+        # Create black image
+        panel_img = Image.new('RGB', (panel_width, height), color='black')
+        draw = ImageDraw.Draw(panel_img)
+        
+        # Try to use fonts of different sizes for headers and body text
+        try:
+            header_font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 22)
+            body_font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 18)
+        except:
+            header_font = ImageFont.load_default()
+            body_font = ImageFont.load_default()
+        
+        # Split text into lines and process
+        lines = text.split('\n')
+        y = 30  # Start 30px from top
+        margin = 20  # Left margin
+        max_width = panel_width - (margin * 2)  # Account for both margins
         
         for line in lines:
-            line = line.strip()
-            if line and not line.endswith('.'):
-                line += '.'
-            # Wrap long lines
-            if len(line) > 60:
+            if not line.strip():
+                y += 10  # Small gap for empty lines
+                continue
+            
+            # Check if this is a header (ends with colon and is all caps)
+            is_header = line.strip().endswith(':') and any(c.isupper() for c in line.strip())
+            current_font = header_font if is_header else body_font
+            
+            # Use different colors for headers
+            color = 'yellow' if is_header else 'white'
+            
+            # Word wrap for long lines
+            if len(line) > 60 or draw.textbbox((0, 0), line, font=current_font)[2] > max_width:
                 words = line.split()
                 current_line = ""
+                
                 for word in words:
-                    if len(current_line + word) < 60:
-                        current_line += word + " "
+                    test_line = current_line + " " + word if current_line else word
+                    bbox = draw.textbbox((0, 0), test_line, font=current_font)
+                    
+                    if bbox[2] <= max_width:
+                        current_line = test_line
                     else:
                         if current_line:
-                            formatted_lines.append(current_line.strip())
-                        current_line = word + " "
+                            draw.text((margin, y), current_line, fill=color, font=current_font)
+                            y += 25
+                        current_line = word
+                
                 if current_line:
-                    formatted_lines.append(current_line.strip())
-            elif line:
-                formatted_lines.append(line)
+                    draw.text((margin, y), current_line, fill=color, font=current_font)
+                    y += 25
+            else:
+                draw.text((margin, y), line, fill=color, font=current_font)
+                y += 25
+            
+            # Add extra spacing after headers
+            if is_header:
+                y += 5
+            
+            # Stop if we're running out of space
+            if y > height - 50:
+                break
         
-        formatted_text = '\n'.join(formatted_lines[:4])  # Limit to 4 lines
+        # Convert PIL image to numpy array
+        panel_array = np.array(panel_img)
         
-        # Create text clip with semi-transparent background
-        txt_clip = TextClip(
-            formatted_text,
-            fontsize=int(height * 0.03),  # 3% of video height
-            font='Arial',
-            color='white',
-            bg_color='black',
-            size=(int(width * 0.9), None),  # 90% of video width
-            method='caption',
-            align='center'
-        ).set_duration(duration)
+        # Create video from the static image
+        panel_clip = ImageClip(panel_array, duration=duration)
         
-        # Position at bottom of video
-        txt_clip = txt_clip.set_position(('center', int(height * 0.85)))
-        
-        # Add fade in/out effect
-        txt_clip = txt_clip.crossfadein(0.5).crossfadeout(0.5)
-        
-        return txt_clip
+        return panel_clip
     
     def process_video(self, video_path: str) -> Dict:
         """
@@ -308,12 +476,32 @@ class VideoCoachingProcessor:
             # Step 3: Analyze each chunk and create overlay videos
             chunk_clips = []
             all_advice = []
+            previous_advice_summaries = []  # Track previous summaries for context
+            memory_data = {
+                'video_path': video_path,
+                'chunks': []
+            }
             
             for i, chunk in enumerate(tqdm(chunks, desc="Analyzing chunks")):
                 # Get coaching advice for this chunk
                 logger.info(f"Analyzing chunk {i+1}/{len(chunks)}...")
-                advice = self.analyze_video_chunk(chunk)
+                # Pass previous advice summaries to the analysis function
+                advice = self.analyze_video_chunk(chunk, i, previous_advice_summaries)
                 all_advice.append(f"Segment {i+1}: {advice}")
+                
+                # Summarize the advice for the overlay
+                summary = self.summarize_advice(advice, i)
+                previous_advice_summaries.append(summary)  # Add the summary to the list
+                
+                # Save to memory
+                memory_data['chunks'].append({
+                    'segment': i + 1,
+                    'full_advice': advice,
+                    'summary': summary,
+                    'timestamp': f"{i * 2.0:.1f}s - {(i + 1) * 2.0:.1f}s"  # Assuming 2 seconds per chunk
+                })
+                
+                logger.info(f"Summary for chunk {i+1}: {summary}")
                 
                 # Create video clip for this chunk with overlay
                 chunk_duration = len(chunk) / self.target_fps
@@ -328,12 +516,12 @@ class VideoCoachingProcessor:
                     out.write(frame_bgr)
                 out.release()
                 
-                # Create video clip with overlay
+                # Create video clip with side panel
                 video_clip = VideoFileClip(chunk_path)
-                text_overlay = self.create_overlay_text(advice, (width, height), chunk_duration)
+                text_panel = self.create_side_panel(summary, (width, height), chunk_duration)
                 
-                # Composite video with text overlay
-                composite = CompositeVideoClip([video_clip, text_overlay])
+                # Place video and panel side by side
+                composite = clips_array([[video_clip, text_panel]])
                 chunk_clips.append(composite)
             
             # Step 4: Concatenate all chunks
@@ -357,6 +545,25 @@ class VideoCoachingProcessor:
             for clip in chunk_clips:
                 clip.close()
             
+            # Save memory file
+            memory_filename = os.path.basename(video_path).replace('.mp4', '_memory.json')
+            memory_path = output_path.replace('_coached.mp4', '_memory.json')
+            
+            # Add metadata to memory
+            memory_data['metadata'] = {
+                'processed_at': datetime.now().isoformat(),
+                'model_used': f'AI Vision-{self.model_size}',
+                'total_duration': total_frames / fps,
+                'resolution': f"{width}x{height}",
+                'chunks_processed': len(chunks)
+            }
+            
+            # Save memory to JSON file
+            with open(memory_path, 'w', encoding='utf-8') as f:
+                json.dump(memory_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Coaching memory saved to: {memory_path}")
+            
             # Prepare results
             results = {
                 'status': 'success',
@@ -369,6 +576,7 @@ class VideoCoachingProcessor:
                 },
                 'coaching_segments': all_advice,
                 'output_video_path': output_path,
+                'memory_file_path': memory_path,
                 'model_used': f'AI Vision-{self.model_size}'
             }
             

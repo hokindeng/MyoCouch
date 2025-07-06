@@ -107,6 +107,35 @@ async def couch_command(
                           f"Model: {coaching_result.get('model_used', 'AI Vision')}"
         await processing_msg.edit(embed=embed)
         
+        # Print full coaching segments to console
+        logger.info("=== Full Coaching Analysis ===")
+        for segment in coaching_result['coaching_segments']:
+            logger.info(segment)
+        logger.info("=============================")
+        
+        # Create local directory for coached videos if it doesn't exist
+        output_dir = Path("coached_videos")
+        output_dir.mkdir(exist_ok=True)
+        
+        # Copy the video to local directory with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        local_filename = f"{timestamp}_coached_{video.filename}"
+        local_path = output_dir / local_filename
+        
+        # Copy the temporary coached video to local directory
+        import shutil
+        temp_output_path = coaching_result['output_video_path']
+        shutil.copy2(temp_output_path, local_path)
+        logger.info(f"Coached video saved locally: {local_path}")
+        
+        # Copy the memory file to local directory
+        if 'memory_file_path' in coaching_result:
+            memory_filename = f"{timestamp}_memory_{video.filename.replace('.mp4', '.json')}"
+            local_memory_path = output_dir / memory_filename
+            shutil.copy2(coaching_result['memory_file_path'], local_memory_path)
+            logger.info(f"Coaching memory saved locally: {local_memory_path}")
+        
         # Create success embed
         success_embed = discord.Embed(
             title="✅ MyoCouch Analysis Complete!",
@@ -127,8 +156,25 @@ async def couch_command(
         # Add summary of coaching segments
         segments = coaching_result['coaching_segments']
         if segments:
+            # Clean and format segments for display
+            cleaned_segments = []
+            for seg in segments:
+                # Remove "Segment X: assistant" prefix and clean up
+                if ": assistant" in seg:
+                    seg = seg.split(": assistant", 1)[1].strip()
+                elif "assistant\n" in seg:
+                    seg = seg.split("assistant\n", 1)[1].strip()
+                elif "assistant" in seg and seg.startswith("Segment"):
+                    parts = seg.split(":", 1)
+                    if len(parts) > 1:
+                        seg = parts[1].replace("assistant", "").strip()
+                
+                # Truncate to first sentence for preview
+                first_sentence = seg.split('.')[0] + '.' if '.' in seg else seg[:100] + '...'
+                cleaned_segments.append(first_sentence)
+            
             # Show first 3 segments as preview
-            preview_segments = segments[:3]
+            preview_segments = cleaned_segments[:3]
             preview_text = '\n'.join([f"• {seg}" for seg in preview_segments])
             if len(segments) > 3:
                 preview_text += f"\n... and {len(segments) - 3} more segments"
@@ -151,13 +197,11 @@ async def couch_command(
         await processing_msg.edit(embed=success_embed)
         
         # Send the coached video
-        output_path = coaching_result['output_video_path']
-        
         # Check if the output video is within Discord's file size limit
-        output_size = os.path.getsize(output_path)
+        output_size = os.path.getsize(local_path)
         if output_size <= 25 * 1024 * 1024:  # 25MB limit
             # Send the coached video
-            with open(output_path, 'rb') as f:
+            with open(local_path, 'rb') as f:
                 coached_video = discord.File(f, filename=f"coached_{video.filename}")
                 await ctx.followup.send(
                     "Here's your video with AI coaching advice overlaid! 🎥",
@@ -173,8 +217,12 @@ async def couch_command(
         # Clean up temporary files
         try:
             os.remove(tmp_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
+            # Remove only the temporary output, not the local copy
+            if os.path.exists(temp_output_path):
+                os.remove(temp_output_path)
+            # Remove temporary memory file
+            if 'memory_file_path' in coaching_result and os.path.exists(coaching_result['memory_file_path']):
+                os.remove(coaching_result['memory_file_path'])
         except:
             pass
         
