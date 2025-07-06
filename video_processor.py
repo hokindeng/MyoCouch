@@ -54,9 +54,9 @@ class VideoCoachingProcessor:
                 
         # Video processing parameters
         self.target_fps = 30
-        self.chunk_size = 60  # frames per chunk
+        self.chunk_size = 120  # frames per chunk (4 seconds at 30fps)
         self.frames_per_analysis = 8  # frames to sample from each chunk for analysis
-        self.max_chunks = 10  # Maximum chunks to process to prevent timeout
+        self.max_chunks = 6  # Maximum chunks to process to prevent timeout
         
         self.coaching_prompt = """You are MyoCouch, an expert fitness coach analyzing workout videos. 
         Analyze this exercise video segment and provide specific, actionable coaching advice.
@@ -419,7 +419,8 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
             y += line_height
         
         # Add segment indicator at the bottom
-        segment_text = f"Segment {duration//2:.0f}"  # Rough segment number
+        segment_num = int(duration // 4) + 1  # Segment number based on 4 seconds per chunk
+        segment_text = f"Segment {segment_num}"
         draw.text((margin, height - 40), segment_text, fill='gray', font=font)
         
         # Convert PIL image to numpy array
@@ -455,18 +456,24 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            original_duration = total_frames / fps if fps > 0 else 0
             cap.release()
             
             # Step 2: Extract video chunks
             logger.info(f"Extracting video chunks ({self.chunk_size} frames each)...")
             chunks = self.extract_video_chunks(downsampled_path)
             
-            # Limit chunks to prevent timeout
+            # Limit chunks to prevent timeout - cut video if too long
+            original_chunk_count = len(chunks)
             if len(chunks) > self.max_chunks:
-                logger.warning(f"Video has {len(chunks)} chunks, limiting to {self.max_chunks} to prevent timeout")
+                logger.warning(f"Video has {len(chunks)} chunks, cutting to first {self.max_chunks} chunks (processing first {self.max_chunks * 4} seconds)")
                 chunks = chunks[:self.max_chunks]
+                
+                # Update total frames to reflect the cut
+                total_frames = min(total_frames, self.max_chunks * self.chunk_size)
             
-            logger.info(f"Processing {len(chunks)} chunks")
+            logger.info(f"Processing {len(chunks)} chunks" + 
+                       (f" (video cut from {original_chunk_count} chunks)" if original_chunk_count > self.max_chunks else ""))
             
             # Step 3: Analyze each chunk and create overlay videos
             chunk_clips = []
@@ -493,7 +500,7 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
                     'segment': i + 1,
                     'full_advice': advice,
                     'summary': summary,
-                    'timestamp': f"{i * 2.0:.1f}s - {(i + 1) * 2.0:.1f}s"  # Assuming 2 seconds per chunk
+                    'timestamp': f"{i * 4.0:.1f}s - {(i + 1) * 4.0:.1f}s"  # 4 seconds per chunk
                 })
                 
                 logger.info(f"Summary for chunk {i+1}: {summary}")
@@ -568,10 +575,12 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
                 'status': 'success',
                 'video_info': {
                     'duration_seconds': total_frames / fps,
+                    'original_duration_seconds': original_duration,
                     'fps': fps,
                     'resolution': (width, height),
                     'total_frames': total_frames,
-                    'chunks_processed': len(chunks)
+                    'chunks_processed': len(chunks),
+                    'video_was_cut': original_chunk_count > self.max_chunks
                 },
                 'coaching_segments': all_advice,
                 'output_video_path': output_path,

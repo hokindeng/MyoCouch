@@ -94,10 +94,10 @@ async def couch_command(
             duration = frame_count / fps if fps > 0 else 0
             cap.release()
             
-            if duration > 60:  # More than 60 seconds
+            if duration > 24:  # More than 24 seconds (6 chunks * 4 seconds each)
                 await ctx.followup.send(
-                    "⚠️ Your video is longer than 60 seconds. Processing may take several minutes. "
-                    "For best results, use videos under 30 seconds."
+                    f"⚠️ Your video is {duration:.1f} seconds long. Only the first 24 seconds will be analyzed "
+                    f"(6 segments × 4 seconds each). For complete analysis, use videos under 24 seconds."
                 )
         except:
             pass  # Continue even if duration check fails
@@ -156,8 +156,8 @@ async def couch_command(
                     except discord.HTTPException:
                         logger.warning("Failed to update progress message")
                 
-                # Timeout after 10 minutes
-                if elapsed > 600:
+                # Timeout after 5 minutes (reduced from 10 since max 6 chunks)
+                if elapsed > 300:
                     raise Exception("Processing timeout - video too long or complex")
             
             # Get the result
@@ -215,9 +215,13 @@ async def couch_command(
         
         # Add video stats
         video_info = coaching_result['video_info']
+        duration_text = f"• Duration: {video_info['duration_seconds']:.1f} seconds"
+        if video_info.get('video_was_cut', False):
+            duration_text += f" (cut from {video_info.get('original_duration_seconds', 0):.1f}s)"
+        
         success_embed.add_field(
             name="📊 Video Statistics",
-            value=f"• Duration: {video_info['duration_seconds']:.1f} seconds\n"
+            value=duration_text + f"\n"
                   f"• Resolution: {video_info['resolution'][0]}x{video_info['resolution'][1]}\n"
                   f"• Segments analyzed: {video_info['chunks_processed']}",
             inline=False
