@@ -21,7 +21,7 @@ MyoCouch is a Discord bot that provides personalized coaching advice by analyzin
 
 ### 1. Prerequisites
 
-- Python 3.8 or higher
+- Python 3.8.19
 - Discord Bot Token ([Create a bot here](https://discord.com/developers/applications))
 - CUDA-capable GPU (recommended) or CPU (slower)
 - 4GB+ RAM (8GB+ recommended)
