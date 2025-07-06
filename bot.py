@@ -85,6 +85,23 @@ async def couch_command(
             tmp_file.write(video_data)
             tmp_path = tmp_file.name
         
+        # Check video duration
+        try:
+            import cv2
+            cap = cv2.VideoCapture(tmp_path)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            duration = frame_count / fps if fps > 0 else 0
+            cap.release()
+            
+            if duration > 60:  # More than 60 seconds
+                await ctx.followup.send(
+                    "⚠️ Your video is longer than 60 seconds. Processing may take several minutes. "
+                    "For best results, use videos under 30 seconds."
+                )
+        except:
+            pass  # Continue even if duration check fails
+        
         # Update status
         embed.description = f"**Step 2/4:** Analyzing video with AI...\n" \
                           f"Model: AI Vision-{MODEL_SIZE}"
@@ -92,11 +109,64 @@ async def couch_command(
         
         # Process the video in a separate thread
         loop = asyncio.get_event_loop()
-        coaching_result = await loop.run_in_executor(
-            None,
-            video_processor.process_video,
-            tmp_path
-        )
+        
+        # Create a task for video processing
+        import time
+        start_time = time.time()
+        last_update = start_time
+        
+        async def process_with_updates():
+            """Process video while sending periodic updates to Discord."""
+            nonlocal last_update  # Access the outer scope variable
+            
+            # Run processing in executor
+            future = loop.run_in_executor(
+                None,
+                video_processor.process_video,
+                tmp_path
+            )
+            
+            # Send updates while processing
+            update_messages = [
+                "🔄 AI is analyzing your movements...",
+                "🤖 Processing video segments...",
+                "✨ Creating coaching overlays...",
+                "📝 Generating personalized advice...",
+                "🎬 Finalizing your coached video..."
+            ]
+            
+            message_index = 0
+            while not future.done():
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+                current_time = time.time()
+                elapsed = current_time - start_time
+                
+                # Update every 30 seconds to prevent timeout
+                if current_time - last_update > 30:
+                    update_msg = update_messages[message_index % len(update_messages)]
+                    embed.description = f"**Step 2/4:** {update_msg}\n" \
+                                      f"Time elapsed: {elapsed:.0f} seconds\n" \
+                                      f"Model: AI Vision-{MODEL_SIZE}"
+                    
+                    try:
+                        await processing_msg.edit(embed=embed)
+                        last_update = current_time
+                        message_index += 1
+                    except discord.HTTPException:
+                        logger.warning("Failed to update progress message")
+                
+                # Timeout after 10 minutes
+                if elapsed > 600:
+                    raise Exception("Processing timeout - video too long or complex")
+            
+            # Get the result
+            return await future
+        
+        try:
+            coaching_result = await process_with_updates()
+        except asyncio.TimeoutError:
+            raise Exception("Processing timeout - Discord connection lost")
         
         # Check if processing was successful
         if coaching_result['status'] != 'success':

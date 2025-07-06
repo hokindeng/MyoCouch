@@ -56,6 +56,7 @@ class VideoCoachingProcessor:
         self.target_fps = 30
         self.chunk_size = 60  # frames per chunk
         self.frames_per_analysis = 8  # frames to sample from each chunk for analysis
+        self.max_chunks = 10  # Maximum chunks to process to prevent timeout
         
         self.coaching_prompt = """You are MyoCouch, an expert fitness coach analyzing workout videos. 
         Analyze this exercise video segment and provide specific, actionable coaching advice.
@@ -459,7 +460,13 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
             # Step 2: Extract video chunks
             logger.info(f"Extracting video chunks ({self.chunk_size} frames each)...")
             chunks = self.extract_video_chunks(downsampled_path)
-            logger.info(f"Extracted {len(chunks)} chunks")
+            
+            # Limit chunks to prevent timeout
+            if len(chunks) > self.max_chunks:
+                logger.warning(f"Video has {len(chunks)} chunks, limiting to {self.max_chunks} to prevent timeout")
+                chunks = chunks[:self.max_chunks]
+            
+            logger.info(f"Processing {len(chunks)} chunks")
             
             # Step 3: Analyze each chunk and create overlay videos
             chunk_clips = []
@@ -516,16 +523,20 @@ Please create a 80-word summary with NEW coaching advice that hasn't been mentio
             logger.info("Concatenating coached video segments...")
             final_video = concatenate_videoclips(chunk_clips)
             
-            # Save final coached video
+            # Save final coached video with reduced file size
             output_path = video_path.replace('.mp4', '_coached.mp4')
             final_video.write_videofile(
                 output_path,
                 fps=self.target_fps,
                 codec='libx264',
-                audio_codec='aac',
+                audio_codec='aac' if final_video.audio is not None else None,
                 temp_audiofile=os.path.join(temp_dir, 'temp-audio.m4a'),
                 remove_temp=True,
-                logger=None  # Suppress moviepy logging
+                logger=None,  # Suppress moviepy logging
+                preset='ultrafast',  # Faster encoding
+                ffmpeg_params=['-crf', '28', '-maxrate', '1M', '-bufsize', '2M'],  # Conservative encoding
+                verbose=False,
+                threads=2  # Limit threads to prevent resource exhaustion
             )
             
             # Clean up
