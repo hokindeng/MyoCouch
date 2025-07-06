@@ -360,22 +360,70 @@ class VideoCoachingProcessor:
             logger.info("Concatenating coached video segments...")
             final_video = concatenate_videoclips(chunk_clips)
             
-            # Save final coached video
+            # Save final coached video with better error handling
             output_path = video_path.replace('.mp4', '_coached.mp4')
-            final_video.write_videofile(
-                output_path,
-                fps=self.target_fps,
-                codec='libx264',
-                audio_codec='aac',
-                temp_audiofile=os.path.join(temp_dir, 'temp-audio.m4a'),
-                remove_temp=True,
-                logger=None  # Suppress moviepy logging
-            )
             
-            # Clean up
-            final_video.close()
-            for clip in chunk_clips:
-                clip.close()
+            try:
+                # Check if the original video has audio
+                original_clip = VideoFileClip(video_path)
+                has_audio = original_clip.audio is not None
+                original_clip.close()
+                
+                logger.info(f"Writing final video (audio: {has_audio})...")
+                
+                # Write video with appropriate settings
+                if has_audio:
+                    final_video.write_videofile(
+                        output_path,
+                        fps=self.target_fps,
+                        codec='libx264',
+                        audio_codec='aac',
+                        audio_bitrate='128k',
+                        temp_audiofile=os.path.join(temp_dir, 'temp-audio.m4a'),
+                        remove_temp=True,
+                        threads=4,  # Use multiple threads for stability
+                        preset='medium',  # Balance between speed and compression
+                        logger=None  # Suppress moviepy logging
+                    )
+                else:
+                    # Write without audio if original has no audio
+                    final_video.write_videofile(
+                        output_path,
+                        fps=self.target_fps,
+                        codec='libx264',
+                        audio=False,  # No audio track
+                        threads=4,
+                        preset='medium',
+                        logger=None
+                    )
+                    
+            except Exception as e:
+                logger.error(f"Error writing video file: {e}")
+                # Try alternative approach with different settings
+                try:
+                    logger.info("Attempting alternative video encoding...")
+                    final_video.write_videofile(
+                        output_path,
+                        fps=self.target_fps,
+                        codec='mpeg4',  # More compatible codec
+                        audio_codec='mp3' if has_audio else None,
+                        audio=has_audio,
+                        bitrate='2000k',
+                        threads=2,
+                        logger=None
+                    )
+                except Exception as fallback_error:
+                    logger.error(f"Alternative encoding also failed: {fallback_error}")
+                    raise Exception(f"Could not encode video: {str(e)}")
+            
+            finally:
+                # Clean up resources
+                try:
+                    final_video.close()
+                    for clip in chunk_clips:
+                        clip.close()
+                except:
+                    pass
             
             # Prepare results
             results = {

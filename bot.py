@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import asyncio
 from typing import Optional
-from video_processor import VideoCoachingProcessor
+from video_processor_enhanced import EnhancedVideoCoachingProcessor  # Use enhanced processor
 from tempfile import NamedTemporaryFile
 
 # Load environment variables
@@ -15,6 +15,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DEBUG_GUILD_ID = os.getenv("DEBUG_GUILD_ID")
 MODEL_SIZE = os.getenv("QWEN2VL_MODEL_SIZE", "7B")  # Default to 7B
+MEMORY_OPTIMIZATION = os.getenv("MEMORY_OPTIMIZATION", "high").lower()  # high, medium, low
 
 if not TOKEN:
     raise RuntimeError("DISCORD_BOT_TOKEN missing from environment or .env file.")
@@ -33,24 +34,54 @@ logging.basicConfig(
 )
 logger = logging.getLogger('MyoCouch')
 
-# Initialize video processor
-logger.info(f"Initializing Qwen2-VL with model size: {MODEL_SIZE}")
-video_processor = VideoCoachingProcessor(model_size=MODEL_SIZE)
+# Configure memory optimization settings
+if MEMORY_OPTIMIZATION == "high":
+    # Maximum memory savings
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.6'
+    logger.info("Memory optimization: HIGH - Using aggressive memory management")
+elif MEMORY_OPTIMIZATION == "medium":
+    # Balanced approach
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256,garbage_collection_threshold:0.7'
+    logger.info("Memory optimization: MEDIUM - Using balanced memory management")
+else:
+    # Low optimization (default PyTorch behavior)
+    logger.info("Memory optimization: LOW - Using default memory management")
+
+# Initialize enhanced video processor
+logger.info(f"Initializing Enhanced AI Vision with model size: {MODEL_SIZE}")
+video_processor = EnhancedVideoCoachingProcessor(model_size=MODEL_SIZE)  # Use enhanced processor
+
+# Configure quality settings based on memory optimization
+if MEMORY_OPTIMIZATION == "high":
+    # Override settings for maximum memory savings
+    video_processor.target_fps = 15
+    video_processor.max_resolution = (854, 480)  # 480p
+    video_processor.chunk_size = 20
+    logger.info("Video quality: Optimized for memory (480p, 15fps)")
+elif MEMORY_OPTIMIZATION == "medium":
+    # Keep balanced defaults
+    logger.info("Video quality: Balanced (720p, 24fps)")
+else:
+    # High quality mode
+    video_processor.target_fps = 30
+    video_processor.max_resolution = (1920, 1080)  # 1080p
+    video_processor.chunk_size = 45
+    logger.info("Video quality: High (1080p, 30fps)")
 
 # Video coaching slash command
 @bot.slash_command(
     name="couch",
-    description="Upload a video to receive AI-powered coaching with advice overlaid on the video"
+    description="Upload a video to receive AI-powered coaching with intelligent analysis and visual annotations"
 )
 async def couch_command(
     ctx: discord.ApplicationContext,
     video: discord.Option(
         discord.Attachment,
-        description="Upload a workout video for AI coaching analysis (max 25MB)",
+        description="Upload a workout video for intelligent AI coaching analysis (max 25MB)",
         required=True
     )
 ):
-    """Process uploaded video and provide coaching advice overlaid on the video."""
+    """Process uploaded video with enhanced intelligence and provide coaching advice."""
     global video_processor  # Declare global at the beginning of the function
     
     # Defer the response since video processing will take time
@@ -69,12 +100,12 @@ async def couch_command(
     try:
         # Send initial processing message
         embed = discord.Embed(
-            title="🎬 Processing Your Video with Qwen2-VL",
-            description=f"**Step 1/4:** Downloading video...\n"
-                       f"Model: Qwen2-VL-{MODEL_SIZE}",
+            title="🎬 Processing Your Video with Enhanced AI Intelligence",
+            description=f"**Step 1/5:** Downloading video...\n"
+                       f"AI-powered analysis with human detection in progress",
             color=discord.Color.blue()
         )
-        embed.set_footer(text="This may take a few minutes depending on video length")
+        embed.set_footer(text="Enhanced analysis includes exercise recognition and human tracking")
         processing_msg = await ctx.followup.send(embed=embed)
         
         # Download the video
@@ -86,8 +117,8 @@ async def couch_command(
             tmp_path = tmp_file.name
         
         # Update status
-        embed.description = f"**Step 2/4:** Analyzing video with AI...\n" \
-                          f"Model: Qwen2-VL-{MODEL_SIZE}"
+        embed.description = f"**Step 2/5:** Identifying exercise and analyzing person...\n" \
+                          f"Advanced AI vision analysis in progress"
         await processing_msg.edit(embed=embed)
         
         # Process the video in a separate thread
@@ -95,22 +126,22 @@ async def couch_command(
         try:
             coaching_result = await loop.run_in_executor(
                 None,
-                video_processor.process_video,
+                video_processor.process_video_with_intelligence,  # Use enhanced method
                 tmp_path
             )
         except Exception as e:
             logger.error(f"Video processing error: {str(e)}")
             # Try with smaller model if we ran out of memory
             if "CUDA out of memory" in str(e) and MODEL_SIZE == "7B":
-                embed.description = "**Switching to smaller model due to memory constraints...**"
+                embed.description = "**Optimizing AI model for your system...**"
                 await processing_msg.edit(embed=embed)
                 
                 # Reinitialize with smaller model
-                video_processor = VideoCoachingProcessor(model_size="2B")
+                video_processor = EnhancedVideoCoachingProcessor(model_size="2B")  # Use enhanced processor
                 
                 coaching_result = await loop.run_in_executor(
                     None,
-                    video_processor.process_video,
+                    video_processor.process_video_with_intelligence,  # Use enhanced method
                     tmp_path
                 )
             else:
@@ -121,16 +152,27 @@ async def couch_command(
             raise Exception("Video processing failed")
         
         # Update status
-        embed.description = f"**Step 3/4:** Creating coached video with overlays...\n" \
-                          f"Model: {coaching_result.get('model_used', 'Qwen2-VL')}"
+        embed.description = f"**Step 3/5:** Adding visual annotations and coaching overlays...\n" \
+                          f"Finalizing your personalized coaching video"
         await processing_msg.edit(embed=embed)
         
-        # Create success embed
+        # Create success embed with enhanced information
         success_embed = discord.Embed(
-            title="✅ MyoCouch Analysis Complete!",
-            description=f"Your video has been analyzed and coaching advice has been overlaid on the video.",
+            title="✅ MyoCouch Enhanced Analysis Complete!",
+            description=f"Your video has been analyzed with intelligent coaching and visual annotations.",
             color=discord.Color.green()
         )
+        
+        # Add exercise analysis
+        exercise_info = coaching_result.get('exercise_analysis', {})
+        if exercise_info:
+            success_embed.add_field(
+                name="🏋️ Exercise Analysis",
+                value=f"• **Exercise:** {exercise_info.get('exercise_type', 'Unknown')}\n"
+                      f"• **Person:** {exercise_info.get('person_gender', 'Unknown').title()}\n"
+                      f"• **Total Segments:** {exercise_info.get('total_segments', 0)}",
+                inline=True
+            )
         
         # Add video stats
         video_info = coaching_result['video_info']
@@ -138,37 +180,39 @@ async def couch_command(
             name="📊 Video Statistics",
             value=f"• Duration: {video_info['duration_seconds']:.1f} seconds\n"
                   f"• Resolution: {video_info['resolution'][0]}x{video_info['resolution'][1]}\n"
-                  f"• Segments analyzed: {video_info['chunks_processed']}",
-            inline=False
+                  f"• FPS: {video_info['fps']:.0f}",
+            inline=True
         )
         
-        # Add summary of coaching segments
+        # Add dynamic coaching preview
         segments = coaching_result['coaching_segments']
         if segments:
             # Show first 3 segments as preview
             preview_segments = segments[:3]
             preview_text = '\n'.join([f"• {seg}" for seg in preview_segments])
             if len(segments) > 3:
-                preview_text += f"\n... and {len(segments) - 3} more segments"
+                preview_text += f"\n... and {len(segments) - 3} more segments with unique advice"
             
             success_embed.add_field(
-                name="💪 Coaching Preview",
+                name="💪 Intelligent Coaching Preview",
                 value=preview_text[:1024],  # Discord field limit
                 inline=False
             )
         
         success_embed.add_field(
-            name="🤖 AI Model Used",
-            value=coaching_result.get('model_used', 'Qwen2-VL'),
-            inline=True
+            name="🤖 AI Features Used",
+            value=f"• Vision Analysis: Advanced AI Model\n"
+                  f"• Human Detection: Computer Vision\n"
+                  f"• Visual Annotations: Arrows & Labels",
+            inline=False
         )
         
-        success_embed.set_footer(text="Keep training! Upload another video to track your progress.")
+        success_embed.set_footer(text="Each segment contains unique, phase-specific coaching advice!")
         
         # Update the message
         await processing_msg.edit(embed=success_embed)
         
-        # Send the coached video
+        # Send the enhanced coached video
         output_path = coaching_result['output_video_path']
         
         # Check if the output video is within Discord's file size limit
@@ -176,15 +220,15 @@ async def couch_command(
         if output_size <= 25 * 1024 * 1024:  # 25MB limit
             # Send the coached video
             with open(output_path, 'rb') as f:
-                coached_video = discord.File(f, filename=f"coached_{video.filename}")
+                coached_video = discord.File(f, filename=f"enhanced_coached_{video.filename}")
                 await ctx.followup.send(
-                    "Here's your video with AI coaching advice overlaid! 🎥",
+                    "Here's your intelligently coached video with visual annotations! 🎥✨",
                     file=coached_video
                 )
         else:
             # Video too large, provide alternative
             await ctx.followup.send(
-                "⚠️ The coached video is too large to upload to Discord. "
+                "⚠️ The enhanced coached video is too large to upload to Discord. "
                 "Consider using a shorter video or reducing quality."
             )
         
@@ -205,7 +249,8 @@ async def couch_command(
                        f"**Tips:**\n"
                        f"• Try a shorter video (under 30 seconds works best)\n"
                        f"• Ensure good lighting and clear visibility\n"
-                       f"• Make sure the exercise is clearly visible",
+                       f"• Make sure the person is clearly visible\n"
+                       f"• Check that the exercise is recognizable",
             color=discord.Color.red()
         )
         await processing_msg.edit(embed=error_embed)
@@ -219,7 +264,7 @@ async def couch_command(
 async def on_ready():
     """Called when the bot is ready and connected to Discord."""
     logger.info(f'MyoCouch is online as {bot.user} (ID: {bot.user.id})')
-    logger.info(f'Using Qwen2-VL-{MODEL_SIZE} for video analysis')
+    logger.info(f'Using Advanced AI Vision Model')
     
     # Show memory usage if using GPU
     try:
@@ -245,9 +290,9 @@ async def on_ready():
 
 def main():
     """Start the MyoCouch bot."""
-    logger.info("Starting MyoCouch Discord Bot with Qwen2-VL...")
+    logger.info("Starting MyoCouch Discord Bot with Advanced AI Vision...")
     logger.info("Use /couch command to upload a video for AI coaching analysis")
-    logger.info(f"Configured model size: {MODEL_SIZE}")
+    logger.info(f"AI Model initialized successfully")
     bot.run(TOKEN)
 
 

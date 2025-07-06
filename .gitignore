@@ -67,6 +67,7 @@ tmp/
 
 # Discord bot specific
 discord.log
+yolov8n.pt
 bot-data/
 
 # Jupyter Notebooks (if used for testing)
